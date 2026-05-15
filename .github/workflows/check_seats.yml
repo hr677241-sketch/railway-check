@@ -1,38 +1,42 @@
-name: 🚂 Pakistan Railway Seat Checker
+name: 🚂 Pakistan Railway Seat Checker (RABTA)
 
 on:
   schedule:
-    # Runs every 15 minutes (GitHub Actions minimum is 5 min)
-    - cron: "*/15 * * * *"
-
-  # Allow manual trigger from GitHub Actions tab
-  workflow_dispatch:
+    - cron: "*/15 * * * *"   # every 15 minutes
+  workflow_dispatch:          # manual trigger from Actions tab
 
 jobs:
   check-seats:
-    name: Check Economy Seats (KHI → Sadikabad)
+    name: Check Economy Seats — KCT → SDK
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 12
 
     steps:
-      # ── 1. Checkout repo ────────────────────────────────────
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ── 2. Set up Python ────────────────────────────────────
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: "pip"
 
-      # ── 3. Install dependencies ──────────────────────────────
-      - name: Install dependencies
+      - name: Install Google Chrome
+        run: |
+          wget -q -O - https://dl.google.com/linux/linux_signing_key.pub \
+            | sudo gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg
+          echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] \
+            https://dl.google.com/linux/chrome/deb/ stable main" \
+            | sudo tee /etc/apt/sources.list.d/google-chrome.list
+          sudo apt-get update -qq
+          sudo apt-get install -y google-chrome-stable
+          google-chrome --version
+
+      - name: Install Python dependencies
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
 
-      # ── 4. Run the seat checker ──────────────────────────────
       - name: Run seat checker
         env:
           GMAIL_USER:         ${{ secrets.GMAIL_USER }}
