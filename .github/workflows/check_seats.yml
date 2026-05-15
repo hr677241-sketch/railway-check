@@ -54,4 +54,8 @@ jobs:
           git commit --allow-empty -m "chore: keep workflow alive [skip ci]"
           git push
         env:
+<<<<<<< HEAD
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+=======
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+>>>>>>> 8bedb92 (new)
