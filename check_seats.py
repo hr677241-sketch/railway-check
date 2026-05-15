@@ -114,34 +114,95 @@ def wait_for_spa(driver: webdriver.Chrome, timeout: int = 60) -> bool:
 # ──────────────────────────────────────────────
 # SEAT COLUMN PARSER
 # ──────────────────────────────────────────────
-
-# Each seat cell is "N/A"  →  0 seats
-#                or "153 Rs.2400"  →  153 seats
-_SEAT_CELL_RE = re.compile(r'N/A|(\d+)\s+Rs\.[\s\d]+', re.IGNORECASE)
-
-
-def extract_seat_columns(row_text: str) -> list[int]:
-    """
-    Return a list of integer seat counts for every column in a RABTA row.
-    'N/A' → 0.  '153 Rs.2400' → 153.
-    """
-    counts = []
-    for m in _SEAT_CELL_RE.finditer(row_text):
-        counts.append(int(m.group(1)) if m.group(1) else 0)
-    return counts
-
+# ──────────────────────────────────────────────
+# SEAT COLUMN PARSER  (fixed)
+# ──────────────────────────────────────────────
 
 def get_ec_ecs(row_text: str) -> tuple[int, int]:
     """
-    Return (ec_seats, ecs_seats) from a single train row string.
-    Falls back to (0, 0) if the column count is too low to be a real row.
+    Parse EC (col 5) and ECS (col 6) from a RABTA train-row string.
+
+    RABTA renders seat columns in ONE of three formats per class:
+      • "N/A"            → class not offered         → count = 0
+      • "0"              → offered but sold out       → count = 0
+      • "3\nRs.2300"     → 3 seats at Rs.2300         → count = 3
+      • "3 Rs.2300"      → same, but on one line      → count = 3
+
+    We locate the seat section (everything after the duration line, e.g.
+    "10 h 2 min"), then walk it line-by-line.
     """
-    cols = extract_seat_columns(row_text)
+    # ── find where seat data starts (right after "N h M min") ──
+    dur_m = re.search(r'\d+\s+h\s+\d+\s+min', row_text)
+    seat_section = row_text[dur_m.end():] if dur_m else row_text
+
+    lines = [l.strip() for l in seat_section.splitlines() if l.strip()]
+
+    cols: list[int] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+
+        if line.upper() == "N/A":
+            cols.append(0)
+            i += 1
+
+        elif re.match(r'^\d+\s+Rs\.', line, re.I):
+            # "3 Rs.2300" on a single line
+            cols.append(int(line.split()[0]))
+            i += 1
+
+        elif re.match(r'^\d+$', line):
+            count = int(line)
+            # peek: is the next line a price?
+            if i + 1 < len(lines) and re.match(r'^Rs\.', lines[i + 1], re.I):
+                cols.append(count)
+                i += 2          # consume both the count and the price line
+            else:
+                cols.append(0)  # bare "0" = sold out, no price follows
+                i += 1
+
+        elif re.match(r'^Rs\.', line, re.I):
+            i += 1              # orphaned price line – skip
+
+        elif line.lower() == "booking":
+            break               # end of seat data
+
+        else:
+            i += 1
+
     if len(cols) <= EC_COL_INDEX:
         return 0, 0
+
     ec  = cols[EC_COL_INDEX]
     ecs = cols[ECS_COL_INDEX] if len(cols) > ECS_COL_INDEX else 0
     return ec, ecs
+
+
+def extract_seat_columns(row_text: str) -> list[int]:
+    """Kept for compatibility; now delegates to get_ec_ecs internals."""
+    dur_m = re.search(r'\d+\s+h\s+\d+\s+min', row_text)
+    seat_section = row_text[dur_m.end():] if dur_m else row_text
+    lines = [l.strip() for l in seat_section.splitlines() if l.strip()]
+    cols: list[int] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if line.upper() == "N/A":
+            cols.append(0); i += 1
+        elif re.match(r'^\d+\s+Rs\.', line, re.I):
+            cols.append(int(line.split()[0])); i += 1
+        elif re.match(r'^\d+$', line):
+            if i + 1 < len(lines) and re.match(r'^Rs\.', lines[i + 1], re.I):
+                cols.append(int(line)); i += 2
+            else:
+                cols.append(0); i += 1
+        elif re.match(r'^Rs\.', line, re.I):
+            i += 1
+        elif line.lower() == "booking":
+            break
+        else:
+            i += 1
+    return cols
 
 
 # ──────────────────────────────────────────────
