@@ -2,17 +2,15 @@ name: 🚂 Pakistan Railway Seat Checker (RABTA)
 
 on:
   schedule:
-    - cron: "*/5 * * * *"
-  workflow_dispatch:
-
-permissions:
-  contents: write
+    - cron: "*/15 * * * *"   # every 15 minutes
+  workflow_dispatch:          # manual trigger from Actions tab
 
 jobs:
   check-seats:
     name: Check Economy Seats — KCT → SDK
     runs-on: ubuntu-latest
     timeout-minutes: 12
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -23,7 +21,7 @@ jobs:
           python-version: "3.12"
           cache: "pip"
 
-      - name: Install Google Chrome
+      - name: Install Google Chrome (direct .deb — no GPG needed)
         run: |
           wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
           sudo apt-get install -y ./google-chrome-stable_current_amd64.deb
@@ -39,23 +37,3 @@ jobs:
           GMAIL_USER:         ${{ secrets.GMAIL_USER }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
         run: python check_seats.py
-
-  keep-alive:
-    name: Keep workflow alive
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Push keep-alive commit
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git commit --allow-empty -m "chore: keep workflow alive [skip ci]"
-          git push
-        env:
-<<<<<<< HEAD
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-=======
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
->>>>>>> 8bedb92 (new)
