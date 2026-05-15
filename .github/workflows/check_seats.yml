@@ -2,15 +2,14 @@ name: 🚂 Pakistan Railway Seat Checker (RABTA)
 
 on:
   schedule:
-    - cron: "*/10 * * * *" 
-  workflow_dispatch:          # manual trigger from Actions tab
+    - cron: "0,15,30,45 * * * *"
+  workflow_dispatch:
 
 jobs:
   check-seats:
     name: Check Economy Seats — KCT → SDK
     runs-on: ubuntu-latest
     timeout-minutes: 12
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
