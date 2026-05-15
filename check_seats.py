@@ -3,19 +3,15 @@ Pakistan Railway (RABTA) Seat Availability Checker
 ───────────────────────────────────────────────────
 Route  : Karachi (KCT) → Sadiqabad (SDK)
 Trains : Khyber Mail | Fareed Express | Bahauddin Zakria Express
-Class  : Economy
+         (set TARGET_TRAINS = [] to monitor ALL trains on the route)
+Class  : Economy (EC) + Economy Sleeper (ECS)
 Date   : 2026-05-23
 Alert  : Gmail → hr677241@gmail.com
 
-Target URL (direct deep-link into RABTA SPA):
-  https://www.pakrailways.gov.pk/buy
-    ?boardStationCode=KCT
-    &arrivalStationCode=SDK
-    &travelDate=2026-05-23%2000%3A00%3A00
-    &travelPeriod=00%3A00-24%3A00
-
-RABTA is a JavaScript SPA — we use Selenium + headless Chrome
-to load the page, wait for train cards to render, then parse them.
+RABTA renders a JS SPA with a fixed seat table:
+  Columns: PC | ACSB | ACSL | ACLZ | ACSS | EC | ECS
+  Each cell is either "N/A" or "<count> Rs.<price>"
+We parse EC (index 5) and ECS (index 6) per row.
 """
 
 import os
@@ -23,7 +19,7 @@ import re
 import smtplib
 import time
 import traceback
-from datetime import datetime
+from datetime import datetime, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from urllib.parse import quote
@@ -31,7 +27,6 @@ from urllib.parse import quote
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
 
 # ──────────────────────────────────────────────
 # CONFIGURATION  (secrets come from GitHub Actions env vars)
@@ -40,20 +35,19 @@ GMAIL_USER     = os.environ["GMAIL_USER"]
 GMAIL_PASSWORD = os.environ["GMAIL_APP_PASSWORD"]
 ALERT_TO       = "hr677241@gmail.com"
 
-TRAVEL_DATE       = "2026-05-16"
-FROM_STATION_CODE = "KCT"       # Karachi terminal code used by RABTA
-TO_STATION_CODE   = "SDK"       # Sadiqabad code used by RABTA
+TRAVEL_DATE       = "2026-05-23"
+FROM_STATION_CODE = "KCT"
+TO_STATION_CODE   = "SDK"
 FROM_STATION_NAME = "Karachi"
 TO_STATION_NAME   = "Sadiqabad"
 
+# Trains to watch (lowercase, partial match). Set to [] to alert on ANY train.
 TARGET_TRAINS = [
     "khyber mail",
     "fareed express",
     "bahauddin zakria express",
 ]
-TARGET_CLASS  = "economy"   # matched case-insensitively against card text
 
-# Exact URL the RABTA website uses — copied from your browser
 SEARCH_URL = (
     "https://www.pakrailways.gov.pk/buy"
     f"?boardStationCode={FROM_STATION_CODE}"
@@ -61,6 +55,12 @@ SEARCH_URL = (
     f"&travelDate={quote(TRAVEL_DATE + ' 00:00:00')}"
     "&travelPeriod=00%3A00-24%3A00"
 )
+
+# RABTA seat-column positions (0-based) after "Duration":
+#   0=PC  1=ACSB  2=ACSL  3=ACLZ  4=ACSS  5=EC  6=ECS
+EC_COL_INDEX  = 5
+ECS_COL_INDEX = 6
+
 
 # ──────────────────────────────────────────────
 # BROWSER SETUP
@@ -81,7 +81,6 @@ def make_driver() -> webdriver.Chrome:
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/124.0.0.0 Safari/537.36"
     )
-    # Selenium 4.6+ has a built-in driver manager — no webdriver-manager needed
     driver = webdriver.Chrome(options=opts)
     driver.execute_cdp_cmd(
         "Page.addScriptToEvaluateOnNewDocument",
@@ -92,63 +91,129 @@ def make_driver() -> webdriver.Chrome:
 
 
 # ──────────────────────────────────────────────
-# SCRAPING
+# SPA WAIT
 # ──────────────────────────────────────────────
 
 def wait_for_spa(driver: webdriver.Chrome, timeout: int = 60) -> bool:
-    """
-    Poll until RABTA SPA has rendered train cards OR a 'no trains' message.
-    Returns True when something useful is on screen.
-    """
-    css_candidates = [
-        ".train-card", ".train-item", ".journey-card",
-        "[class*='trainCard']", "[class*='TrainCard']",
-        "[class*='train-result']", "[class*='TrainResult']",
-        "li[class*='train']", "div[class*='train']",
-    ]
-    xpath_candidates = [
-        "//*[contains(translate(text(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ',"
-            "'abcdefghijklmnopqrstuvwxyz'),'khyber')]",
-        "//*[contains(translate(text(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ',"
-            "'abcdefghijklmnopqrstuvwxyz'),'fareed')]",
-        "//*[contains(translate(text(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ',"
-            "'abcdefghijklmnopqrstuvwxyz'),'bahauddin')]",
-        "//*[contains(translate(text(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ',"
-            "'abcdefghijklmnopqrstuvwxyz'),'economy')]",
-        "//*[contains(text(),'No Train')]",
-        "//*[contains(text(),'no train')]",
-    ]
-
+    """Poll until RABTA has rendered train results (or a 'no trains' notice)."""
     deadline = time.time() + timeout
     while time.time() < deadline:
-        for sel in css_candidates:
-            try:
-                if driver.find_elements(By.CSS_SELECTOR, sel):
-                    print(f"[INFO] SPA ready — found element: {sel}")
-                    return True
-            except Exception:
-                pass
-        for xp in xpath_candidates:
-            try:
-                if driver.find_elements(By.XPATH, xp):
-                    print(f"[INFO] SPA ready — found XPath content")
-                    return True
-            except Exception:
-                pass
+        try:
+            body = driver.find_element(By.TAG_NAME, "body").text
+            if "Booking" in body or "booking" in body.lower() \
+                    or "No Train" in body or "no train" in body.lower():
+                print("[INFO] SPA ready — train data detected")
+                return True
+        except Exception:
+            pass
         time.sleep(3)
-
-    # Last resort: check body has real content
-    try:
-        body = driver.find_element(By.TAG_NAME, "body").text.strip()
-        if len(body) > 300:
-            print("[INFO] SPA ready (body text > 300 chars)")
-            return True
-    except Exception:
-        pass
-
-    print("[WARN] Timed out waiting for SPA — will attempt parse anyway")
+    print("[WARN] Timed out waiting for SPA — attempting parse anyway")
     return False
 
+
+# ──────────────────────────────────────────────
+# SEAT COLUMN PARSER
+# ──────────────────────────────────────────────
+
+# Each seat cell is "N/A"  →  0 seats
+#                or "153 Rs.2400"  →  153 seats
+_SEAT_CELL_RE = re.compile(r'N/A|(\d+)\s+Rs\.[\s\d]+', re.IGNORECASE)
+
+
+def extract_seat_columns(row_text: str) -> list[int]:
+    """
+    Return a list of integer seat counts for every column in a RABTA row.
+    'N/A' → 0.  '153 Rs.2400' → 153.
+    """
+    counts = []
+    for m in _SEAT_CELL_RE.finditer(row_text):
+        counts.append(int(m.group(1)) if m.group(1) else 0)
+    return counts
+
+
+def get_ec_ecs(row_text: str) -> tuple[int, int]:
+    """
+    Return (ec_seats, ecs_seats) from a single train row string.
+    Falls back to (0, 0) if the column count is too low to be a real row.
+    """
+    cols = extract_seat_columns(row_text)
+    if len(cols) <= EC_COL_INDEX:
+        return 0, 0
+    ec  = cols[EC_COL_INDEX]
+    ecs = cols[ECS_COL_INDEX] if len(cols) > ECS_COL_INDEX else 0
+    return ec, ecs
+
+
+# ──────────────────────────────────────────────
+# TRAIN NAME EXTRACTOR
+# ──────────────────────────────────────────────
+
+_KNOWN_STATIONS = {
+    "karachi", "cantt", "sadikabad", "sadiqabad", "lahore",
+    "peshawar", "quetta", "rawalpindi", "multan", "faisalabad",
+    "hyderabad", "sukkur", "larkana", "nawabshah",
+}
+
+
+def extract_train_name(row_text: str) -> str:
+    """
+    Pull the human-readable train name from a RABTA row string like:
+      '11UP Hazara Express KARACHI CANTT SADIKABAD 07:00 ...'
+    """
+    # Strip leading train number (e.g. "11UP", "13DN")
+    cleaned = re.sub(r'^\s*\d+\w+\s+', '', row_text.strip())
+    name_parts = []
+    for word in cleaned.split():
+        if re.match(r'\d{1,2}:\d{2}', word):   # hit a time → stop
+            break
+        if word.upper() == word and word.lower() in _KNOWN_STATIONS:
+            break
+        if word.upper() == word and len(word) > 3:  # all-caps station word
+            break
+        name_parts.append(word)
+    return " ".join(name_parts).strip() or cleaned[:40]
+
+
+# ──────────────────────────────────────────────
+# ROW PARSING
+# ──────────────────────────────────────────────
+
+def train_passes_filter(row_lower: str) -> bool:
+    """Return True if the row should be considered (passes train-name filter)."""
+    if not TARGET_TRAINS:
+        return True          # empty filter → watch all trains
+    return any(t in row_lower for t in TARGET_TRAINS)
+
+
+def parse_row_text(row_text: str) -> dict | None:
+    """
+    Parse one train row (plain text) and return a result dict, or None.
+    A valid row must contain 'Booking' and pass the train filter.
+    """
+    lower = row_text.lower()
+    if "booking" not in lower:
+        return None
+    if not train_passes_filter(lower):
+        return None
+
+    ec, ecs = get_ec_ecs(row_text)
+    if ec == 0 and ecs == 0:
+        return None
+
+    name = extract_train_name(row_text)
+    print(f"[FOUND] ✅ {name} → EC: {ec}  ECS: {ecs}")
+    return {
+        "name":          name,
+        "ec_seats":      ec,
+        "ecs_seats":     ecs,
+        "economy_seats": ec + ecs,
+        "booking_url":   SEARCH_URL,
+    }
+
+
+# ──────────────────────────────────────────────
+# SCRAPING
+# ──────────────────────────────────────────────
 
 def scrape(driver: webdriver.Chrome) -> list[dict]:
     print(f"[INFO] Loading: {SEARCH_URL}")
@@ -159,122 +224,64 @@ def scrape(driver: webdriver.Chrome) -> list[dict]:
     print(f"[DEBUG] Page snippet (first 800 chars):\n{body_text[:800]}")
     print("─" * 50)
 
-    found = []
+    found   = []
+    seen    = set()
 
-    # ── Strategy 1: named card containers ──────────────────────
-    card_selectors = [
-        ".train-card", ".train-item", ".journey-card",
-        "[class*='trainCard']", "[class*='TrainCard']",
-        "[class*='train-result']", "[class*='TrainResult']",
-        "li[class*='train']", "div[class*='train']",
-    ]
-    cards = []
-    for sel in card_selectors:
-        try:
-            cards = driver.find_elements(By.CSS_SELECTOR, sel)
-            if cards:
-                print(f"[INFO] {len(cards)} card(s) via selector '{sel}'")
-                break
-        except Exception:
-            pass
+    # ── Strategy 1: parse <tr> elements ───────────────────────────
+    rows = driver.find_elements(By.TAG_NAME, "tr")
+    if rows:
+        print(f"[INFO] Parsing {len(rows)} <tr> element(s)")
+        for row in rows:
+            try:
+                rt = row.text.strip()
+                if not rt or rt in seen:
+                    continue
+                seen.add(rt)
+                r = parse_row_text(rt)
+                if r:
+                    found.append(r)
+            except Exception:
+                pass
 
-    if cards:
-        for card in cards:
-            r = parse_block(card)
+    # ── Strategy 2: split body text on train-number markers ───────
+    if not found:
+        print("[INFO] No <tr> hits — splitting body text on train numbers")
+        # RABTA rows start with a number+direction e.g. "11UP", "13DN"
+        segments = re.split(r'(?=\b\d{1,3}(?:UP|DN)\b)', body_text)
+        for seg in segments:
+            seg = seg.strip()
+            if not seg or seg in seen or len(seg) < 30:
+                continue
+            seen.add(seg)
+            r = parse_row_text(seg)
             if r:
                 found.append(r)
 
-    # ── Strategy 2: scan all block elements ────────────────────
+    # ── Strategy 3: line-by-line fallback ─────────────────────────
     if not found:
-        print("[INFO] No named cards — scanning div/li/article elements…")
-        for tag in ("div", "li", "article", "section"):
-            seen = set()
-            for el in driver.find_elements(By.TAG_NAME, tag):
-                try:
-                    txt = el.text.strip().lower()
-                    if len(txt) < 20 or len(txt) > 3000 or txt in seen:
-                        continue
-                    seen.add(txt)
-                    if not any(t in txt for t in TARGET_TRAINS):
-                        continue
-                    if TARGET_CLASS not in txt and "eco" not in txt:
-                        continue
-                    r = parse_block(el)
-                    if r and r["name"] not in {x["name"] for x in found}:
-                        found.append(r)
-                except Exception:
-                    pass
-            if found:
-                break
+        print("[INFO] Last resort — line-by-line body scan")
+        for line in body_text.splitlines():
+            line = line.strip()
+            if not line or line in seen or len(line) < 30:
+                continue
+            seen.add(line)
+            r = parse_row_text(line)
+            if r:
+                found.append(r)
 
-    # ── Strategy 3: full-page text grep ────────────────────────
-    if not found:
-        print("[INFO] Last resort — full page text scan")
-        pg = body_text.lower()
-        for train in TARGET_TRAINS:
-            if train in pg and ("eco" in pg or "economy" in pg):
-                n = extract_seat_count(pg)
-                if n > 0:
-                    found.append({
-                        "name":          train.title(),
-                        "economy_seats": n,
-                        "booking_url":   SEARCH_URL,
-                    })
-                    print(f"[FOUND] ✅ {train.title()} (full-page) → {n} seat(s)")
+    # ── Diagnostic: warn if target trains never appeared ──────────
+    if not found and TARGET_TRAINS:
+        page_lower = body_text.lower()
+        missing = [t for t in TARGET_TRAINS if t not in page_lower]
+        if missing:
+            print(
+                f"[WARN] Target train(s) not found on page for {TRAVEL_DATE}: "
+                + ", ".join(t.title() for t in missing)
+            )
+            print("[WARN] These trains may not operate on this date. "
+                  "Check the RABTA website manually.")
 
     return found
-
-
-def parse_block(el, train_override: str = None) -> dict | None:
-    try:
-        text  = el.text.strip()
-        lower = text.lower()
-
-        matched = train_override or next(
-            (t for t in TARGET_TRAINS if t in lower), None
-        )
-        if not matched:
-            return None
-        if TARGET_CLASS not in lower and "eco" not in lower:
-            return None
-
-        seats = extract_seat_count(lower)
-        if seats == 0:
-            print(f"[INFO] {matched.title()} found but 0 seats")
-            return None
-
-        links = el.find_elements(By.TAG_NAME, "a")
-        booking_url = SEARCH_URL
-        for a in links:
-            href = a.get_attribute("href") or ""
-            if "pakrailways" in href:
-                booking_url = href
-                break
-
-        print(f"[FOUND] ✅ {matched.title()} → {seats} Economy seat(s)")
-        return {
-            "name":          matched.title(),
-            "economy_seats": seats,
-            "booking_url":   booking_url,
-        }
-    except Exception:
-        return None
-
-
-def extract_seat_count(text: str) -> int:
-    patterns = [
-        r"available[^0-9]{0,20}(\d+)",
-        r"(\d+)[^0-9]{0,15}available",
-        r"eco(?:nomy)?[^0-9]{0,15}(\d+)",
-        r"seats?[^0-9]{0,10}(\d+)",
-        r"berths?[^0-9]{0,10}(\d+)",
-        r"\b([1-9]\d{0,2})\b",
-    ]
-    for pat in patterns:
-        m = re.search(pat, text, re.IGNORECASE)
-        if m:
-            return int(m.group(1))
-    return 0
 
 
 # ──────────────────────────────────────────────
@@ -286,15 +293,21 @@ def send_alert(available: list[dict]):
         f"🚂 SEATS AVAILABLE — {FROM_STATION_NAME} → {TO_STATION_NAME}"
         f" | Economy | {TRAVEL_DATE}"
     )
-    rows = ""
+
+    rows_html = ""
     for t in available:
-        rows += f"""
+        ec_cell  = (f"<span style='color:#15803d;font-weight:700;font-size:18px;'>"
+                    f"{t['ec_seats']}</span>") if t["ec_seats"] else "<span style='color:#9ca3af;'>—</span>"
+        ecs_cell = (f"<span style='color:#15803d;font-weight:700;font-size:18px;'>"
+                    f"{t['ecs_seats']}</span>") if t["ecs_seats"] else "<span style='color:#9ca3af;'>—</span>"
+        rows_html += f"""
         <tr>
           <td style="padding:12px 16px;border:1px solid #e5e7eb;font-weight:600;">
             {t['name']}</td>
-          <td style="padding:12px 16px;border:1px solid #e5e7eb;
-                     text-align:center;color:#15803d;font-weight:700;font-size:20px;">
-            {t['economy_seats']}</td>
+          <td style="padding:12px 16px;border:1px solid #e5e7eb;text-align:center;">
+            {ec_cell}</td>
+          <td style="padding:12px 16px;border:1px solid #e5e7eb;text-align:center;">
+            {ecs_cell}</td>
           <td style="padding:12px 16px;border:1px solid #e5e7eb;text-align:center;">
             <a href="{t['booking_url']}"
                style="display:inline-block;background:#2563eb;color:#fff;
@@ -302,12 +315,12 @@ def send_alert(available: list[dict]):
                       font-size:13px;font-weight:600;">Book Now →</a></td>
         </tr>"""
 
+    now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     html = f"""
 <html><body style="font-family:Arial,sans-serif;background:#f0fdf4;padding:32px 16px;margin:0;">
-  <div style="max-width:620px;margin:auto;background:#fff;border-radius:14px;
+  <div style="max-width:640px;margin:auto;background:#fff;border-radius:14px;
               box-shadow:0 4px 20px rgba(0,0,0,.08);overflow:hidden;">
-    <div style="background:linear-gradient(135deg,#15803d,#16a34a);
-                color:#fff;padding:28px;">
+    <div style="background:linear-gradient(135deg,#15803d,#16a34a);color:#fff;padding:28px;">
       <div style="font-size:32px;margin-bottom:6px;">🚂</div>
       <h2 style="margin:0;font-size:24px;">Economy Seats Found!</h2>
       <p style="margin:8px 0 0;opacity:.85;font-size:15px;">
@@ -327,12 +340,14 @@ def send_alert(available: list[dict]):
             <th style="padding:10px 16px;border:1px solid #e5e7eb;
                        text-align:left;font-size:13px;color:#6b7280;">TRAIN</th>
             <th style="padding:10px 16px;border:1px solid #e5e7eb;
-                       font-size:13px;color:#6b7280;">ECONOMY SEATS</th>
+                       font-size:13px;color:#6b7280;">EC SEATS</th>
+            <th style="padding:10px 16px;border:1px solid #e5e7eb;
+                       font-size:13px;color:#6b7280;">ECS SEATS</th>
             <th style="padding:10px 16px;border:1px solid #e5e7eb;
                        font-size:13px;color:#6b7280;">ACTION</th>
           </tr>
         </thead>
-        <tbody>{rows}</tbody>
+        <tbody>{rows_html}</tbody>
       </table>
       <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;
                   padding:14px 16px;font-size:13px;color:#166534;">
@@ -341,8 +356,7 @@ def send_alert(available: list[dict]):
       </div>
       <p style="margin-top:20px;font-size:11px;color:#9ca3af;border-top:
                 1px solid #f3f4f6;padding-top:14px;">
-        Sent by GitHub Actions seat-watcher &bull;
-        {datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")} UTC
+        Sent by GitHub Actions seat-watcher &bull; {now_utc} UTC
       </p>
     </div>
   </div>
@@ -354,9 +368,9 @@ def send_alert(available: list[dict]):
 
 def send_error_email(err: str):
     subj = "⚠️ Pakistan Rail Checker — Script Error"
+    now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     html = (
-        f"<p>Seat checker crashed at "
-        f"<strong>{datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC</strong>:</p>"
+        f"<p>Seat checker crashed at <strong>{now_utc} UTC</strong>:</p>"
         f"<pre style='background:#fef2f2;padding:12px;border-radius:6px;"
         f"font-size:12px;overflow:auto;'>{err}</pre>"
     )
@@ -382,13 +396,18 @@ def _send_gmail(subject: str, html: str):
 # ──────────────────────────────────────────────
 
 def main():
+    now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    train_label = (
+        ", ".join(t.title() for t in TARGET_TRAINS)
+        if TARGET_TRAINS else "ALL trains on route"
+    )
     print(f"\n{'='*60}")
     print(f"Pakistan Railway (RABTA) Seat Checker")
-    print(f"Run time : {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC")
+    print(f"Run time : {now_utc} UTC")
     print(f"Route    : {FROM_STATION_NAME} ({FROM_STATION_CODE})"
           f" → {TO_STATION_NAME} ({TO_STATION_CODE})")
-    print(f"Date     : {TRAVEL_DATE}  |  Class: Economy")
-    print(f"Trains   : {', '.join(t.title() for t in TARGET_TRAINS)}")
+    print(f"Date     : {TRAVEL_DATE}  |  Class: Economy (EC + ECS)")
+    print(f"Trains   : {train_label}")
     print(f"URL      : {SEARCH_URL}")
     print(f"{'='*60}\n")
 
@@ -399,7 +418,7 @@ def main():
 
         if available:
             send_alert(available)
-            print(f"\n✅ {len(available)} train(s) found — alert sent to {ALERT_TO}!")
+            print(f"\n✅ {len(available)} train(s) with Economy seats — alert sent to {ALERT_TO}!")
         else:
             print("\n❌ No Economy seats right now. Will check again next run.")
 
