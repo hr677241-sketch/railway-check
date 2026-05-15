@@ -40,7 +40,7 @@ GMAIL_USER     = os.environ["GMAIL_USER"]
 GMAIL_PASSWORD = os.environ["GMAIL_APP_PASSWORD"]
 ALERT_TO       = "hr677241@gmail.com"
 
-TRAVEL_DATE       = "2026-05-23"
+TRAVEL_DATE       = "2026-05-16"
 FROM_STATION_CODE = "KCT"       # Karachi terminal code used by RABTA
 TO_STATION_CODE   = "SDK"       # Sadiqabad code used by RABTA
 FROM_STATION_NAME = "Karachi"
