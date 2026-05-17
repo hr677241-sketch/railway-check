@@ -38,9 +38,11 @@ TO_STATION_NAME   = "Sadiqabad"
 
 # Trains to watch (lowercase, partial match). Set [] to alert on ANY train.
 TARGET_TRAINS = [
-    "khyber mail",
-    "fareed express",
-    "bahauddin zakria express",
+         "khyber mail",
+         "fareed express",
+         "bahauddin zakria express",
+         "Millat Express",
+         "Allama Iqbal Express",
 ]
 
 SEARCH_URL = (
