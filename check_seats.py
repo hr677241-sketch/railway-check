@@ -30,7 +30,7 @@ GMAIL_USER     = os.environ["GMAIL_USER"]
 GMAIL_PASSWORD = os.environ["GMAIL_APP_PASSWORD"]
 ALERT_TO       = "hr677241@gmail.com"
 
-TRAVEL_DATE       = "2026-05-23"
+TRAVEL_DATE       = "2026-06-23"
 FROM_STATION_CODE = "KCT"
 TO_STATION_CODE   = "SDK"
 FROM_STATION_NAME = "Karachi"
